@@ -331,19 +331,28 @@ if $RUN_SPEEDTEST; then
 
   # Вывод результата
   if [ "$SPEED_MBIT" -gt 0 ]; then
-    INFO "Скорость загрузки: ~${SPEED_MBIT} Mbit/s"
-    if [ "$SPEED_MBIT" -ge 100 ]; then
-      OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (отличная)"
-      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
-    elif [ "$SPEED_MBIT" -ge 50 ]; then
-      OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (хорошая)"
-      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
-    elif [ "$SPEED_MBIT" -ge 10 ]; then
-      WARN "Скорость загрузки ${SPEED_MBIT} Mbit/s (низкая для VPN)"
-      verdict WARN "Скорость" "${SPEED_MBIT} Mbit/s — низкая"
+    # Speedtest-cli использует несколько потоков и может давать результат выше физического канала.
+    # Результат >1000 Mbit/s на 1 Gbit-порту — артефакт измерения, реальный канал = 1 Gbit.
+    SPEED_DISPLAY="$SPEED_MBIT"
+    if [ "$SPEED_MBIT" -gt 1000 ]; then
+      WARN "Результат ${SPEED_MBIT} Mbit/s превышает 1 Gbit — вероятно артефакт многопоточного теста"
+      INFO "  Реальная пропускная способность ограничена портом сервера (обычно 1 Gbit)"
+      SPEED_DISPLAY="~1000 (cap)"
+    fi
+    INFO "Скорость загрузки: ${SPEED_DISPLAY} Mbit/s"
+    # Пороги ориентированы на целевой канал 1 Gbit
+    if [ "$SPEED_MBIT" -ge 900 ]; then
+      OK "Скорость ${SPEED_DISPLAY} Mbit/s — отличная (цель ≥900 Mbit/s достигнута)"
+      verdict OK "Скорость" "${SPEED_DISPLAY} Mbit/s"
+    elif [ "$SPEED_MBIT" -ge 500 ]; then
+      OK "Скорость ${SPEED_DISPLAY} Mbit/s — хорошая"
+      verdict OK "Скорость" "${SPEED_DISPLAY} Mbit/s"
+    elif [ "$SPEED_MBIT" -ge 100 ]; then
+      WARN "Скорость ${SPEED_DISPLAY} Mbit/s — ниже цели 1 Gbit, VPN работать будет но с ограничениями"
+      verdict WARN "Скорость" "${SPEED_DISPLAY} Mbit/s — ниже целевых 1 Gbit"
     else
-      FAIL "Скорость загрузки ${SPEED_MBIT} Mbit/s (очень низкая)"
-      verdict FAIL "Скорость" "${SPEED_MBIT} Mbit/s — критически низкая"
+      FAIL "Скорость ${SPEED_DISPLAY} Mbit/s — критически низкая для VPN-сервера"
+      verdict FAIL "Скорость" "${SPEED_DISPLAY} Mbit/s — критически низкая"
     fi
   else
     WARN "Не удалось измерить скорость ни через один эндпоинт"
