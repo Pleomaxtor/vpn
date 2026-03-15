@@ -246,14 +246,23 @@ fi
 HDR "4. Скорость и задержка"
 
 # Ping
+# На macOS -W задаётся в миллисекундах, на Linux — в секундах
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  PING_WAIT="-W 5000"   # 5000 ms = 5 секунд
+else
+  PING_WAIT="-W 5"      # 5 секунд
+fi
+
 for TARGET in "1.1.1.1" "8.8.8.8"; do
   if command -v ping &>/dev/null; then
-    RTT="$(ping -c 3 -W 3 "$TARGET" 2>/dev/null | grep 'rtt\|round-trip' | grep -o '[0-9.]*\/' | head -2 | tail -1 | tr -d '/')"
+    PING_OUT="$(ping -c 3 $PING_WAIT "$TARGET" 2>/dev/null)"
+    RTT="$(echo "$PING_OUT" | grep -E 'rtt|round-trip' | grep -o '[0-9]*\.[0-9]*/' | sed -n '2p' | tr -d '/')"
     if [ -n "$RTT" ]; then
       RTT_INT="${RTT%.*}"
       INFO "Ping $TARGET: ${RTT} ms (avg)"
       if [ "$RTT_INT" -lt 50 ]; then
         OK "Ping $TARGET — ${RTT} ms (отличный)"
+        verdict OK "Ping $TARGET" "${RTT} ms"
       elif [ "$RTT_INT" -lt 150 ]; then
         OK "Ping $TARGET — ${RTT} ms (хороший)"
         verdict OK "Ping $TARGET" "${RTT} ms"
@@ -292,9 +301,10 @@ if $RUN_SPEEDTEST; then
   SPEED_MBIT=0
 
   # Вариант 1: speedtest-cli (если установлен)
+  # --single: один TCP-поток — даёт реалистичный результат, близкий к реальному VPN-туннелю
   if command -v speedtest-cli &>/dev/null; then
-    INFO "Тест скорости (speedtest-cli)..."
-    ST_OUT="$(speedtest-cli --simple --no-pre-allocate 2>/dev/null || echo '')"
+    INFO "Тест скорости (speedtest-cli --single, один поток)..."
+    ST_OUT="$(speedtest-cli --simple --single --no-pre-allocate 2>/dev/null || echo '')"
     if [ -n "$ST_OUT" ]; then
       INFO "$ST_OUT"
       DL="$(echo "$ST_OUT" | grep -i 'download' | grep -o '[0-9.]*' | head -1)"
@@ -331,28 +341,20 @@ if $RUN_SPEEDTEST; then
 
   # Вывод результата
   if [ "$SPEED_MBIT" -gt 0 ]; then
-    # Speedtest-cli использует несколько потоков и может давать результат выше физического канала.
-    # Результат >1000 Mbit/s на 1 Gbit-порту — артефакт измерения, реальный канал = 1 Gbit.
-    SPEED_DISPLAY="$SPEED_MBIT"
-    if [ "$SPEED_MBIT" -gt 1000 ]; then
-      WARN "Результат ${SPEED_MBIT} Mbit/s превышает 1 Gbit — вероятно артефакт многопоточного теста"
-      INFO "  Реальная пропускная способность ограничена портом сервера (обычно 1 Gbit)"
-      SPEED_DISPLAY="~1000 (cap)"
-    fi
-    INFO "Скорость загрузки: ${SPEED_DISPLAY} Mbit/s"
-    # Пороги ориентированы на целевой канал 1 Gbit
+    INFO "Скорость загрузки (1 поток): ${SPEED_MBIT} Mbit/s"
+    # Пороги ориентированы на целевой канал 1 Gbit (однопоточный тест)
     if [ "$SPEED_MBIT" -ge 900 ]; then
-      OK "Скорость ${SPEED_DISPLAY} Mbit/s — отличная (цель ≥900 Mbit/s достигнута)"
-      verdict OK "Скорость" "${SPEED_DISPLAY} Mbit/s"
+      OK "Скорость ${SPEED_MBIT} Mbit/s — отличная (цель 1 Gbit достигнута)"
+      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
     elif [ "$SPEED_MBIT" -ge 500 ]; then
-      OK "Скорость ${SPEED_DISPLAY} Mbit/s — хорошая"
-      verdict OK "Скорость" "${SPEED_DISPLAY} Mbit/s"
+      OK "Скорость ${SPEED_MBIT} Mbit/s — хорошая (50%+ от 1 Gbit)"
+      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
     elif [ "$SPEED_MBIT" -ge 100 ]; then
-      WARN "Скорость ${SPEED_DISPLAY} Mbit/s — ниже цели 1 Gbit, VPN работать будет но с ограничениями"
-      verdict WARN "Скорость" "${SPEED_DISPLAY} Mbit/s — ниже целевых 1 Gbit"
+      WARN "Скорость ${SPEED_MBIT} Mbit/s — ниже цели 1 Gbit, VPN работать будет но с ограничениями"
+      verdict WARN "Скорость" "${SPEED_MBIT} Mbit/s — ниже целевых 1 Gbit"
     else
-      FAIL "Скорость ${SPEED_DISPLAY} Mbit/s — критически низкая для VPN-сервера"
-      verdict FAIL "Скорость" "${SPEED_DISPLAY} Mbit/s — критически низкая"
+      FAIL "Скорость ${SPEED_MBIT} Mbit/s — критически низкая для VPN-сервера"
+      verdict FAIL "Скорость" "${SPEED_MBIT} Mbit/s — критически низкая"
     fi
   else
     WARN "Не удалось измерить скорость ни через один эндпоинт"
