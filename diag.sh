@@ -287,39 +287,68 @@ else
   WARN "traceroute/tracepath не установлен — пропускаем"
 fi
 
-# Speedtest через curl (без установки пакетов)
+# Speedtest
 if $RUN_SPEEDTEST; then
-  INFO "Тест скорости загрузки (curl → Cloudflare)..."
-  if command -v curl &>/dev/null; then
-    # Загрузка 100MB файла с Cloudflare speed test
-    SPEED_OUTPUT="$(curl -s --max-time 15 \
-      -o /dev/null \
-      -w "%{speed_download}" \
-      "https://speed.cloudflare.com/__down?bytes=104857600" 2>/dev/null || echo '0')"
-    SPEED_BYTES="${SPEED_OUTPUT%.*}"
-    SPEED_MBIT=$(( (SPEED_BYTES * 8) / 1000000 ))
-    if [ "$SPEED_MBIT" -gt 0 ]; then
-      INFO "Скорость загрузки: ~${SPEED_MBIT} Mbit/s"
-      if [ "$SPEED_MBIT" -ge 100 ]; then
-        OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (отличная)"
-        verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
-      elif [ "$SPEED_MBIT" -ge 50 ]; then
-        OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (хорошая)"
-        verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
-      elif [ "$SPEED_MBIT" -ge 10 ]; then
-        WARN "Скорость загрузки ${SPEED_MBIT} Mbit/s (низкая для VPN)"
-        verdict WARN "Скорость" "${SPEED_MBIT} Mbit/s — низкая"
-      else
-        FAIL "Скорость загрузки ${SPEED_MBIT} Mbit/s (очень низкая)"
-        verdict FAIL "Скорость" "${SPEED_MBIT} Mbit/s — критически низкая"
-      fi
-    else
-      WARN "Не удалось измерить скорость (timeout или нет доступа)"
-      verdict WARN "Скорость" "не измерена"
+  SPEED_MBIT=0
+
+  # Вариант 1: speedtest-cli (если установлен)
+  if command -v speedtest-cli &>/dev/null; then
+    INFO "Тест скорости (speedtest-cli)..."
+    ST_OUT="$(speedtest-cli --simple --no-pre-allocate 2>/dev/null || echo '')"
+    if [ -n "$ST_OUT" ]; then
+      INFO "$ST_OUT"
+      DL="$(echo "$ST_OUT" | grep -i 'download' | grep -o '[0-9.]*' | head -1)"
+      SPEED_MBIT="${DL%.*}"
     fi
+
+  # Вариант 2: curl с несколькими fallback-эндпоинтами
+  elif command -v curl &>/dev/null; then
+    # Список эндпоинтов: URL | описание | размер файла
+    declare -a SPEED_URLS=(
+      "https://speed.hetzner.de/100MB.bin|Hetzner 100MB|100MB"
+      "https://bouygues.testdebit.info/100M.iso|Bouygues 100MB|100MB"
+      "https://proof.ovh.net/files/10Mb.dat|OVH 10MB|10MB"
+      "https://ash-speed.hetzner.com/100MB.bin|Hetzner Ashburn 100MB|100MB"
+    )
+
+    for ENTRY in "${SPEED_URLS[@]}"; do
+      URL="${ENTRY%%|*}"; REST="${ENTRY#*|}"; DESC="${REST%%|*}"
+      INFO "Тест скорости загрузки (curl → $DESC)..."
+      RAW="$(curl -s --max-time 20 -o /dev/null -w "%{speed_download}" "$URL" 2>/dev/null || echo '')"
+      # убираем дробную часть и пробелы
+      RAW_INT="${RAW%.*}"
+      RAW_INT="${RAW_INT// /}"
+      if [[ "$RAW_INT" =~ ^[0-9]+$ ]] && [ "$RAW_INT" -gt 0 ]; then
+        SPEED_MBIT=$(( (RAW_INT * 8) / 1000000 ))
+        break
+      fi
+      WARN "  $DESC недоступен, пробуем следующий..."
+    done
   else
     WARN "curl не установлен — speedtest недоступен"
     verdict WARN "Скорость" "curl не установлен"
+  fi
+
+  # Вывод результата
+  if [ "$SPEED_MBIT" -gt 0 ]; then
+    INFO "Скорость загрузки: ~${SPEED_MBIT} Mbit/s"
+    if [ "$SPEED_MBIT" -ge 100 ]; then
+      OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (отличная)"
+      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
+    elif [ "$SPEED_MBIT" -ge 50 ]; then
+      OK "Скорость загрузки ${SPEED_MBIT} Mbit/s (хорошая)"
+      verdict OK "Скорость" "${SPEED_MBIT} Mbit/s"
+    elif [ "$SPEED_MBIT" -ge 10 ]; then
+      WARN "Скорость загрузки ${SPEED_MBIT} Mbit/s (низкая для VPN)"
+      verdict WARN "Скорость" "${SPEED_MBIT} Mbit/s — низкая"
+    else
+      FAIL "Скорость загрузки ${SPEED_MBIT} Mbit/s (очень низкая)"
+      verdict FAIL "Скорость" "${SPEED_MBIT} Mbit/s — критически низкая"
+    fi
+  else
+    WARN "Не удалось измерить скорость ни через один эндпоинт"
+    INFO "  Установите speedtest-cli: pip3 install speedtest-cli"
+    verdict WARN "Скорость" "не измерена — все эндпоинты недоступны"
   fi
 else
   INFO "Speedtest пропущен (--no-speedtest)"
