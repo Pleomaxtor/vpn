@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "===== VPN PRODUCTION TUNING ====="
+echo "===== VPN PRODUCTION TUNING v3 ====="
 
 SYSCTL="/etc/sysctl.conf"
 LIMITS="/etc/security/limits.conf"
@@ -12,7 +12,7 @@ echo "Backup sysctl → $BACKUP"
 cp $SYSCTL $BACKUP
 
 # detect interface
-IFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+IFACE=$(ip -o -4 route show to default | awk '{print $5}')
 
 # detect cpu
 CPU=$(nproc)
@@ -20,9 +20,15 @@ CPU=$(nproc)
 # cpu mask
 MASK=$(printf "%x" $((2**CPU - 1)))
 
+# RPS values
+RPS_FLOW=$((CPU * 2048))
+GLOBAL_FLOW=$((CPU * 4096))
+
 echo "Interface: $IFACE"
-echo "CPU: $CPU"
+echo "CPU cores: $CPU"
 echo "RPS mask: $MASK"
+echo "rps_flow_cnt: $RPS_FLOW"
+echo "rps_sock_flow_entries: $GLOBAL_FLOW"
 
 update_sysctl () {
 
@@ -62,6 +68,8 @@ update_sysctl net.ipv4.tcp_keepalive_intvl 30
 update_sysctl net.ipv4.tcp_keepalive_probes 5
 
 update_sysctl net.ipv4.ip_local_port_range "10240 65535"
+
+update_sysctl net.core.rps_sock_flow_entries $GLOBAL_FLOW
 
 echo "Conntrack tuning..."
 
@@ -105,18 +113,22 @@ systemctl daemon-reexec
 
 echo "Install tools..."
 
+apt --fix-broken install -y
 apt update -y
-apt install irqbalance ethtool iptables -y
+apt install irqbalance ethtool iptables sysstat -y
 
-systemctl enable irqbalance
-systemctl start irqbalance
+systemctl enable irqbalance || true
+systemctl start irqbalance || true
 
 echo "Enable RPS..."
 
-RX="/sys/class/net/$IFACE/queues/rx-0/rps_cpus"
+RX="/sys/class/net/$IFACE/queues/rx-0"
 
-if [ -f "$RX" ]; then
-echo $MASK > $RX
+if [ -d "$RX" ]; then
+
+echo $MASK > $RX/rps_cpus
+echo $RPS_FLOW > $RX/rps_flow_cnt
+
 fi
 
 echo "Persistent RPS..."
@@ -129,6 +141,7 @@ After=network.target
 [Service]
 Type=oneshot
 ExecStart=/bin/bash -c 'echo $MASK > /sys/class/net/$IFACE/queues/rx-0/rps_cpus'
+ExecStart=/bin/bash -c 'echo $RPS_FLOW > /sys/class/net/$IFACE/queues/rx-0/rps_flow_cnt'
 RemainAfterExit=yes
 
 [Install]
@@ -138,20 +151,12 @@ EOF
 systemctl daemon-reload
 systemctl enable network-rps.service
 
-echo "Optional SYN protection rules (disabled by default)"
-
-# Example protection from SYN flood.
-# WARNING: enable only if you experience SYN flood attacks.
-# For VPN servers this may drop legitimate reconnects.
-
-# iptables -A INPUT -p tcp --syn -m limit --limit 30/s --limit-burst 60 -j ACCEPT
-# iptables -A INPUT -p tcp --syn -j DROP
-
-# Recommended safer alternative (limit per IP):
-# iptables -A INPUT -p tcp --dport 443 -m connlimit --connlimit-above 80 -j DROP
-
 echo ""
 echo "===== SERVER STATUS ====="
+
+echo ""
+echo "CPU:"
+nproc
 
 echo ""
 echo "TCP:"
@@ -163,12 +168,12 @@ cat /proc/sys/net/netfilter/nf_conntrack_count
 cat /proc/sys/net/netfilter/nf_conntrack_max
 
 echo ""
-echo "Congestion control:"
-sysctl net.ipv4.tcp_congestion_control
+echo "RPS:"
+cat /sys/class/net/$IFACE/queues/rx-0/rps_cpus 2>/dev/null
 
 echo ""
-echo "CPU:"
-nproc
+echo "Congestion control:"
+sysctl net.ipv4.tcp_congestion_control
 
 echo ""
 echo "Interface:"
